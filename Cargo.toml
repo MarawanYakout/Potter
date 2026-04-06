@@ -1,0 +1,63 @@
+[package]
+name = "potter"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yakout <marawan@marawan.net>"]
+description = "A Rust-powered LLM quick-access overlay daemon"
+license = "MIT"
+repository = "https://github.com/MarawanYakout/Potter"
+keywords = ["llm", "ai", "overlay", "gemini", "ollama"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "potter"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client for Gemini + local AI APIs
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# JSON serialization/deserialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# TOML config file parsing
+toml = "0.8"
+
+# GTK4 UI
+gtk4 = { version = "0.9", features = ["v4_12"] }
+glib = "0.20"
+
+# Global hotkey listener (cross-platform)
+rdev = "0.5"
+
+# Async streams for SSE / streaming responses
+futures-util = "0.3"
+bytes = "1"
+
+# Config file path resolution
+dirs = "5"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Markdown parsing (for output rendering)
+pulldown-cmark = "0.11"
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockito = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
