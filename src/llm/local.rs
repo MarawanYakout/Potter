@@ -1,9 +1,9 @@
 //! Local AI provider -- OpenAI-compatible REST API.
 //!
 //! Supports any OpenAI-compatible server:
-//!   - Ollama        (http://localhost:11434)          -- native /api/generate
-//!   - LM Studio     (http://localhost:1234/v1)        -- /chat/completions
-//!   - llama.cpp     (http://localhost:8080/v1)        -- /chat/completions
+//!   - Ollama        (http://localhost:11434)       -- native /api/generate
+//!   - LM Studio     (http://localhost:1234/v1)     -- /chat/completions
+//!   - llama.cpp     (http://localhost:8080/v1)     -- /chat/completions
 //!
 //! Format detection: if base_url ends with `/v1` we use the OpenAI
 //! chat-completions format; otherwise we use the Ollama native format.
@@ -37,10 +37,6 @@ impl LocalProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Ollama native types
-// ---------------------------------------------------------------------------
-
 #[derive(Serialize)]
 struct OllamaRequest<'a> {
     model: &'a str,
@@ -53,10 +49,6 @@ struct OllamaChunk {
     response: Option<String>,
     done: Option<bool>,
 }
-
-// ---------------------------------------------------------------------------
-// OpenAI-compatible types (LM Studio / llama.cpp)
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 struct OAIRequest<'a> {
@@ -86,14 +78,14 @@ struct OAIDelta {
     content: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Model discovery (Ollama)
-// ---------------------------------------------------------------------------
-
-/// Returns all model names available in a running Ollama instance.
-/// Returns an empty `Vec` if Ollama is not reachable (not an error).
+/// Returns all model names from a running Ollama instance.
+/// Returns an empty Vec if Ollama is unreachable -- not an error.
+///
+/// Previously used block_in_place + block_on which deadlocks on a
+/// current-thread runtime. Fixed to use a direct .await chain.
 pub async fn list_ollama_models(base_url: &str) -> Vec<String> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+
     #[derive(Deserialize)]
     struct Tags {
         models: Vec<ModelEntry>,
@@ -102,25 +94,15 @@ pub async fn list_ollama_models(base_url: &str) -> Vec<String> {
     struct ModelEntry {
         name: String,
     }
-    Client::new()
-        .get(&url)
-        .send()
-        .await
-        .ok()
-        .and_then(|r| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(r.json::<Tags>())
-                    .ok()
-            })
-        })
-        .map(|t| t.models.into_iter().map(|m| m.name).collect())
-        .unwrap_or_default()
-}
 
-// ---------------------------------------------------------------------------
-// Provider impl
-// ---------------------------------------------------------------------------
+    let Ok(response) = Client::new().get(&url).send().await else {
+        return Vec::new();
+    };
+    let Ok(tags) = response.json::<Tags>().await else {
+        return Vec::new();
+    };
+    tags.models.into_iter().map(|m| m.name).collect()
+}
 
 #[async_trait]
 impl LlmProvider for LocalProvider {

@@ -1,19 +1,18 @@
 //! Prompt history ring buffer.
 //!
-//! Stores the last N prompts in memory. Supports navigating with ↑/↓
-//! arrow keys just like a terminal shell history.
+//! Convention (matches every Unix shell):
+//!   Up   (prev) -- move toward older entries (lower index)
+//!   Down (next) -- move toward newer entries (higher index / live input)
 
-/// A fixed-capacity ring buffer of prompt strings.
 #[derive(Debug, Default)]
 pub struct History {
     entries: Vec<String>,
-    /// Cursor position when navigating (None = at the live input)
+    /// `None` = user is at the live input line (not navigating).
     cursor: Option<usize>,
     max: usize,
 }
 
 impl History {
-    /// Creates a new `History` with the given capacity.
     pub fn new(max: usize) -> Self {
         Self {
             entries: Vec::with_capacity(max.min(1024)),
@@ -22,7 +21,7 @@ impl History {
         }
     }
 
-    /// Pushes a new prompt. Ignores empty strings and duplicates of the last entry.
+    /// Pushes a prompt. Ignores empty strings and consecutive duplicates.
     pub fn push(&mut self, prompt: impl Into<String>) {
         let s = prompt.into();
         if s.trim().is_empty() {
@@ -35,75 +34,91 @@ impl History {
             self.entries.remove(0);
         }
         self.entries.push(s);
-        self.cursor = None; // reset navigation after new push
+        self.cursor = None;
     }
 
-    /// Navigate backwards (↑). Returns the previous prompt or `None`.
+    /// Navigate toward older entries (Up arrow).
+    /// First call returns the newest; stays pinned at oldest.
     pub fn prev(&mut self) -> Option<&str> {
         if self.entries.is_empty() {
             return None;
         }
-        let next = match self.cursor {
+        let next_cursor = match self.cursor {
             None => self.entries.len() - 1,
             Some(0) => 0,
             Some(n) => n - 1,
         };
-        self.cursor = Some(next);
-        Some(&self.entries[next])
+        self.cursor = Some(next_cursor);
+        Some(&self.entries[next_cursor])
     }
 
-    /// Navigate forwards (↓). Returns the next prompt, or `None` when back at live input.
+    /// Navigate toward newer entries (Down arrow).
+    /// Returns `None` when past the newest entry (back to live input).
     pub fn next(&mut self) -> Option<&str> {
         match self.cursor {
-            None | Some(0) => {
+            None => None,
+            Some(n) if n + 1 >= self.entries.len() => {
                 self.cursor = None;
                 None
             }
             Some(n) => {
-                self.cursor = Some(n - 1);
-                Some(&self.entries[n - 1])
+                self.cursor = Some(n + 1);
+                Some(&self.entries[n + 1])
             }
         }
     }
 
-    /// Resets the navigation cursor (e.g., when the user starts typing).
     pub fn reset_cursor(&mut self) {
         self.cursor = None;
     }
 
-    /// Returns all stored entries (oldest first).
     pub fn entries(&self) -> &[String] {
         &self.entries
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn push_and_prev() {
+    fn push_and_prev_newest_first() {
         let mut h = History::new(10);
         h.push("first");
         h.push("second");
         assert_eq!(h.prev(), Some("second"));
         assert_eq!(h.prev(), Some("first"));
-        assert_eq!(h.prev(), Some("first")); // stays at oldest
+        assert_eq!(h.prev(), Some("first")); // stays pinned
     }
 
     #[test]
-    fn prev_then_next() {
+    fn down_returns_newer_entries() {
         let mut h = History::new(10);
         h.push("a");
         h.push("b");
+        h.push("c");
+        h.prev(); // c
         h.prev(); // b
         h.prev(); // a
         assert_eq!(h.next(), Some("b"));
-        assert_eq!(h.next(), None); // back to live input
+        assert_eq!(h.next(), Some("c"));
+        assert_eq!(h.next(), None);
+    }
+
+    #[test]
+    fn down_from_live_is_noop() {
+        let mut h = History::new(10);
+        h.push("hello");
+        assert_eq!(h.next(), None);
+    }
+
+    #[test]
+    fn prev_then_next_returns_to_live() {
+        let mut h = History::new(10);
+        h.push("a");
+        h.push("b");
+        h.prev();
+        assert_eq!(h.next(), None);
     }
 
     #[test]
@@ -112,16 +127,25 @@ mod tests {
         h.push("1");
         h.push("2");
         h.push("3");
-        h.push("4"); // should evict "1"
+        h.push("4");
         assert_eq!(h.entries().len(), 3);
         assert_eq!(h.entries()[0], "2");
     }
 
     #[test]
-    fn ignores_duplicates_of_last() {
+    fn ignores_consecutive_duplicates() {
         let mut h = History::new(10);
         h.push("hello");
         h.push("hello");
         assert_eq!(h.entries().len(), 1);
+    }
+
+    #[test]
+    fn allows_non_consecutive_duplicate() {
+        let mut h = History::new(10);
+        h.push("hello");
+        h.push("world");
+        h.push("hello");
+        assert_eq!(h.entries().len(), 3);
     }
 }

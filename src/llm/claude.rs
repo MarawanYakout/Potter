@@ -42,6 +42,11 @@ impl LlmProvider for ClaudeProvider {
             .arg(prompt)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            // kill_on_drop ensures the subprocess is sent SIGKILL when the
+            // Child handle is dropped -- i.e. when the user presses Escape
+            // mid-response and the stream is abandoned. Without this the
+            // process would continue running in the background as a zombie.
+            .kill_on_drop(true)
             .spawn()
             .with_context(|| {
                 format!(
@@ -55,21 +60,24 @@ impl LlmProvider for ClaudeProvider {
             .take()
             .context("Failed to acquire claude stdout handle")?;
 
-        // Ensure child process is reaped when the stream is exhausted
-        tokio::spawn(async move {
-            let _ = child.wait().await;
-        });
-
+        // Move the Child into the stream state tuple so it stays alive
+        // (and kill_on_drop fires) until the stream is exhausted or dropped.
         let reader = BufReader::new(stdout);
         let lines = reader.lines();
 
-        let token_stream = stream::unfold(lines, |mut lines| async move {
-            match lines.next_line().await {
-                Ok(Some(line)) => Some((Ok(format!("{line}\n")), lines)),
-                Ok(None) => None,
-                Err(e) => Some((Err(anyhow::anyhow!("claude read error: {}", e)), lines)),
-            }
-        });
+        let token_stream = stream::unfold(
+            (lines, child),
+            |(mut lines, child)| async move {
+                match lines.next_line().await {
+                    Ok(Some(line)) => Some((Ok(format!("{line}\n")), (lines, child))),
+                    Ok(None) => None,
+                    Err(e) => Some((
+                        Err(anyhow::anyhow!("claude read error: {}", e)),
+                        (lines, child),
+                    )),
+                }
+            },
+        );
 
         Ok(Box::pin(token_stream))
     }

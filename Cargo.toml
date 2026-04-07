@@ -14,46 +14,30 @@ name = "potter"
 path = "src/main.rs"
 
 [dependencies]
-# Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# HTTP client for Gemini + local AI APIs
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# rustls-tls avoids a hard dependency on the system OpenSSL version.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
-# JSON serialization/deserialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# TOML config file parsing
 toml = "0.8"
 
-# GTK4 UI
 gtk4 = { version = "0.9", features = ["v4_12"] }
-glib = "0.20"
 
-# Global hotkey listener (cross-platform)
 rdev = "0.5"
 
-# Async streams for SSE / streaming responses
 futures-util = "0.3"
 bytes = "1"
-
-# Async trait support for LlmProvider
 async-trait = "0.1"
-
-# Config file path resolution
 dirs = "5"
-
-# Error handling
 anyhow = "1"
 thiserror = "1"
 
-# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Markdown parsing (for output rendering)
-pulldown-cmark = "0.11"
+# pulldown-cmark removed until Phase 3 markdown rendering is implemented.
 
 [dev-dependencies]
 tokio-test = "0.4"
