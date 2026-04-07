@@ -1,15 +1,18 @@
 //! Google Gemini provider.
 //!
-//! Uses the Gemini REST API with server-sent events (SSE) for streaming.
-//! Endpoint: POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent
+//! Streams responses from the Gemini REST API using server-sent events (SSE).
+//!
+//! Endpoint:
+//!   POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent
 
 use super::{LlmProvider, TokenStream};
 use crate::config::GeminiConfig;
 use anyhow::{Context, Result};
-use futures_util::stream;
+use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub struct GeminiProvider {
     api_key: String,
@@ -35,7 +38,7 @@ impl GeminiProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Request / Response types
+// Request / response types
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -75,10 +78,10 @@ struct CandidatePart {
 }
 
 // ---------------------------------------------------------------------------
-// LlmProvider impl
+// Provider impl
 // ---------------------------------------------------------------------------
 
-#[async_trait::async_trait]
+#[async_trait]
 impl LlmProvider for GeminiProvider {
     fn name(&self) -> &str {
         "gemini"
@@ -104,45 +107,46 @@ impl LlmProvider for GeminiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Gemini API error {}: {}", status, body);
+            let body_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Gemini API error {}: {}", status, body_text);
         }
 
-        debug!("Gemini stream opened");
+        debug!("Gemini SSE stream opened for model '{}'", self.model);
 
-        // Parse the SSE stream line by line
-        use futures_util::StreamExt;
         let byte_stream = response.bytes_stream();
 
         let token_stream = byte_stream.filter_map(|chunk| async move {
             let bytes = chunk.ok()?;
             let text = std::str::from_utf8(&bytes).ok()?.to_string();
 
-            // SSE lines look like: `data: {json}` or `data: [DONE]`
             let mut tokens = String::new();
             for line in text.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
-                    if json_str.trim() == "[DONE]" {
-                        break;
-                    }
-                    if let Ok(chunk) = serde_json::from_str::<GeminiStreamChunk>(json_str) {
-                        if let Some(candidates) = chunk.candidates {
-                            for c in candidates {
-                                if let Some(content) = c.content {
-                                    if let Some(parts) = content.parts {
-                                        for p in parts {
-                                            if let Some(t) = p.text {
-                                                tokens.push_str(&t);
-                                            }
-                                        }
-                                    }
-                                }
+                let Some(json_str) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                if json_str.trim() == "[DONE]" {
+                    break;
+                }
+                if let Ok(chunk) = serde_json::from_str::<GeminiStreamChunk>(json_str) {
+                    for candidate in chunk.candidates.into_iter().flatten() {
+                        for part in candidate
+                            .content
+                            .into_iter()
+                            .flat_map(|c| c.parts.into_iter().flatten())
+                        {
+                            if let Some(t) = part.text {
+                                tokens.push_str(&t);
                             }
                         }
                     }
                 }
             }
-            if tokens.is_empty() { None } else { Some(Ok(tokens)) }
+
+            if tokens.is_empty() {
+                None
+            } else {
+                Some(Ok(tokens))
+            }
         });
 
         Ok(Box::pin(token_stream))

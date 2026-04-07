@@ -1,19 +1,18 @@
-//! Local AI provider — OpenAI-compatible API.
+//! Local AI provider -- OpenAI-compatible REST API.
 //!
-//! Supports any server that speaks the OpenAI chat-completions streaming API:
-//! - Ollama        (default: http://localhost:11434)
-//! - LM Studio     (default: http://localhost:1234/v1)
-//! - llama.cpp     (default: http://localhost:8080)
+//! Supports any OpenAI-compatible server:
+//!   - Ollama        (http://localhost:11434)          -- native /api/generate
+//!   - LM Studio     (http://localhost:1234/v1)        -- /chat/completions
+//!   - llama.cpp     (http://localhost:8080/v1)        -- /chat/completions
 //!
-//! Endpoint: POST {base_url}/api/generate (Ollama native)
-//!           POST {base_url}/chat/completions (OpenAI-compat)
-//!
-//! We detect which format to use based on whether the base_url ends with `/v1`.
+//! Format detection: if base_url ends with `/v1` we use the OpenAI
+//! chat-completions format; otherwise we use the Ollama native format.
 
 use super::{LlmProvider, TokenStream};
 use crate::config::LocalConfig;
 use anyhow::{Context, Result};
-use futures_util::stream;
+use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -33,20 +32,19 @@ impl LocalProvider {
         }
     }
 
-    /// Returns true if the base_url looks like an OpenAI-compatible endpoint.
     fn is_openai_compat(&self) -> bool {
         self.base_url.ends_with("/v1")
     }
 }
 
 // ---------------------------------------------------------------------------
-// Ollama native API types
+// Ollama native types
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct OllamaRequest {
-    model: String,
-    prompt: String,
+struct OllamaRequest<'a> {
+    model: &'a str,
+    prompt: &'a str,
     stream: bool,
 }
 
@@ -57,34 +55,34 @@ struct OllamaChunk {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI-compatible API types (LM Studio / llama.cpp)
+// OpenAI-compatible types (LM Studio / llama.cpp)
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct OpenAIRequest {
-    model: String,
-    messages: Vec<OpenAIMessage>,
+struct OAIRequest<'a> {
+    model: &'a str,
+    messages: Vec<OAIMessage<'a>>,
     stream: bool,
 }
 
 #[derive(Serialize)]
-struct OpenAIMessage {
-    role: String,
-    content: String,
+struct OAIMessage<'a> {
+    role: &'a str,
+    content: &'a str,
 }
 
 #[derive(Deserialize, Debug)]
-struct OpenAIChunk {
-    choices: Option<Vec<OpenAIChoice>>,
+struct OAIChunk {
+    choices: Option<Vec<OAIChoice>>,
 }
 
 #[derive(Deserialize, Debug)]
-struct OpenAIChoice {
-    delta: Option<OpenAIDelta>,
+struct OAIChoice {
+    delta: Option<OAIDelta>,
 }
 
 #[derive(Deserialize, Debug)]
-struct OpenAIDelta {
+struct OAIDelta {
     content: Option<String>,
 }
 
@@ -92,33 +90,39 @@ struct OpenAIDelta {
 // Model discovery (Ollama)
 // ---------------------------------------------------------------------------
 
-/// Lists all models available in a running Ollama instance.
-/// Returns an empty vec if Ollama is not reachable.
+/// Returns all model names available in a running Ollama instance.
+/// Returns an empty `Vec` if Ollama is not reachable (not an error).
 pub async fn list_ollama_models(base_url: &str) -> Vec<String> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
-    let client = Client::new();
-    let Ok(resp) = client.get(&url).send().await else {
-        return vec![];
-    };
     #[derive(Deserialize)]
-    struct TagsResponse {
+    struct Tags {
         models: Vec<ModelEntry>,
     }
     #[derive(Deserialize)]
     struct ModelEntry {
         name: String,
     }
-    resp.json::<TagsResponse>()
+    Client::new()
+        .get(&url)
+        .send()
         .await
-        .map(|r| r.models.into_iter().map(|m| m.name).collect())
+        .ok()
+        .and_then(|r| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(r.json::<Tags>())
+                    .ok()
+            })
+        })
+        .map(|t| t.models.into_iter().map(|m| m.name).collect())
         .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
-// LlmProvider impl
+// Provider impl
 // ---------------------------------------------------------------------------
 
-#[async_trait::async_trait]
+#[async_trait]
 impl LlmProvider for LocalProvider {
     fn name(&self) -> &str {
         "local"
@@ -134,34 +138,29 @@ impl LlmProvider for LocalProvider {
 }
 
 impl LocalProvider {
-    /// Streams via the Ollama native `/api/generate` endpoint.
     async fn stream_ollama(&self, prompt: &str) -> Result<TokenStream> {
         let url = format!("{}/api/generate", self.base_url);
-        debug!("Ollama request to {}", url);
-
-        let body = OllamaRequest {
-            model: self.model.clone(),
-            prompt: prompt.to_string(),
-            stream: true,
-        };
+        debug!("Ollama generate: POST {}", url);
 
         let response = self
             .client
             .post(&url)
-            .json(&body)
+            .json(&OllamaRequest {
+                model: &self.model,
+                prompt,
+                stream: true,
+            })
             .send()
             .await
-            .context("Failed to reach Ollama. Is it running? (`ollama serve`)")?;
+            .context("Cannot reach Ollama. Is it running? Try: ollama serve")?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Ollama error {}: {}", status, body);
+            let s = response.status();
+            let b = response.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama error {}: {}", s, b);
         }
 
-        use futures_util::StreamExt;
         let byte_stream = response.bytes_stream();
-
         let token_stream = byte_stream.filter_map(|chunk| async move {
             let bytes = chunk.ok()?;
             let text = std::str::from_utf8(&bytes).ok()?.to_string();
@@ -171,6 +170,9 @@ impl LocalProvider {
                     if let Some(t) = c.response {
                         tokens.push_str(&t);
                     }
+                    if c.done.unwrap_or(false) {
+                        break;
+                    }
                 }
             }
             if tokens.is_empty() { None } else { Some(Ok(tokens)) }
@@ -179,52 +181,48 @@ impl LocalProvider {
         Ok(Box::pin(token_stream))
     }
 
-    /// Streams via the OpenAI-compatible `/chat/completions` endpoint.
     async fn stream_openai(&self, prompt: &str) -> Result<TokenStream> {
         let url = format!("{}/chat/completions", self.base_url);
-        debug!("OpenAI-compat request to {}", url);
-
-        let body = OpenAIRequest {
-            model: self.model.clone(),
-            messages: vec![OpenAIMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
-            stream: true,
-        };
+        debug!("OpenAI-compat: POST {}", url);
 
         let response = self
             .client
             .post(&url)
-            .json(&body)
+            .json(&OAIRequest {
+                model: &self.model,
+                messages: vec![OAIMessage {
+                    role: "user",
+                    content: prompt,
+                }],
+                stream: true,
+            })
             .send()
             .await
-            .context("Failed to reach OpenAI-compatible server")?;
+            .context("Cannot reach OpenAI-compatible server")?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Local API error {}: {}", status, body);
+            let s = response.status();
+            let b = response.text().await.unwrap_or_default();
+            anyhow::bail!("Local API error {}: {}", s, b);
         }
 
-        use futures_util::StreamExt;
         let byte_stream = response.bytes_stream();
-
         let token_stream = byte_stream.filter_map(|chunk| async move {
             let bytes = chunk.ok()?;
             let text = std::str::from_utf8(&bytes).ok()?.to_string();
             let mut tokens = String::new();
             for line in text.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
-                    if json_str.trim() == "[DONE]" { break; }
-                    if let Ok(c) = serde_json::from_str::<OpenAIChunk>(json_str) {
-                        if let Some(choices) = c.choices {
-                            for choice in choices {
-                                if let Some(delta) = choice.delta {
-                                    if let Some(t) = delta.content {
-                                        tokens.push_str(&t);
-                                    }
-                                }
+                let Some(json_str) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                if json_str.trim() == "[DONE]" {
+                    break;
+                }
+                if let Ok(c) = serde_json::from_str::<OAIChunk>(json_str) {
+                    for choice in c.choices.into_iter().flatten() {
+                        if let Some(delta) = choice.delta {
+                            if let Some(t) = delta.content {
+                                tokens.push_str(&t);
                             }
                         }
                     }

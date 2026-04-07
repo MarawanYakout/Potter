@@ -2,21 +2,22 @@
 //!
 //! Any backend (Gemini, Claude, Local) implements the `LlmProvider` trait.
 //! `route_prompt` parses the optional `@prefix` from the user's input and
-//! dispatches to the correct provider, returning a stream of text chunks.
+//! dispatches to the correct provider, returning an async stream of tokens.
 
 pub mod claude;
 pub mod gemini;
 pub mod local;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use futures_util::Stream;
 use std::pin::Pin;
 
-/// A streaming response: an async stream of `String` chunks.
+/// A streaming response: an async stream of `String` token chunks.
 pub type TokenStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
 
 /// Common interface for all LLM backends.
-#[async_trait::async_trait]
+#[async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Returns the short name of this provider (e.g. "gemini", "claude", "local").
     fn name(&self) -> &str;
@@ -24,7 +25,7 @@ pub trait LlmProvider: Send + Sync {
     /// Sends `prompt` and returns a streaming sequence of token chunks.
     async fn stream(&self, prompt: &str) -> Result<TokenStream>;
 
-    /// Non-streaming fallback — collects the full stream into a single String.
+    /// Non-streaming convenience -- collects the full stream into one String.
     async fn complete(&self, prompt: &str) -> Result<String> {
         use futures_util::StreamExt;
         let mut stream = self.stream(prompt).await?;
@@ -43,37 +44,35 @@ pub trait LlmProvider: Send + Sync {
 /// The result of parsing a user's raw input string.
 #[derive(Debug, PartialEq)]
 pub struct ParsedPrompt {
-    /// Which provider was requested ("gemini", "claude", "local", or the
-    /// default from config when no prefix is present).
+    /// Which provider was requested.
     pub provider: String,
-    /// Optional model override for local provider, e.g. `@local:mistral`.
+    /// Optional model override for the local provider (e.g. `@local:mistral`).
     pub model_override: Option<String>,
     /// The actual prompt text after stripping the @prefix.
     pub text: String,
 }
 
-/// Parses `@prefix` from the start of a raw input string.
+/// Parses an optional `@prefix` from the start of a raw input string.
 ///
 /// Examples:
-/// - `"@gemini What is Rust?"` → provider = "gemini", text = "What is Rust?"
-/// - `"@local:mistral Explain RLHF"` → provider = "local", model_override = Some("mistral")
-/// - `"Hello world"` → provider = default_provider (from config)
+/// - `"@gemini What is Rust?"`        -> provider="gemini",  text="What is Rust?"
+/// - `"@local:mistral Explain RLHF"` -> provider="local",   model_override=Some("mistral")
+/// - `"Hello world"`                 -> provider=default,   text="Hello world"
 pub fn parse_prompt(raw: &str, default_provider: &str) -> ParsedPrompt {
     let trimmed = raw.trim();
 
     if let Some(rest) = trimmed.strip_prefix('@') {
-        // Split on first space to separate prefix from prompt body
         let (prefix_part, text) = rest
             .split_once(' ')
             .map(|(a, b)| (a, b.trim()))
             .unwrap_or((rest, ""));
 
-        // Handle @local:modelname
-        let (provider_str, model_override) = if let Some((p, m)) = prefix_part.split_once(':') {
-            (p.to_string(), Some(m.to_string()))
-        } else {
-            (prefix_part.to_string(), None)
-        };
+        let (provider_str, model_override) =
+            if let Some((p, m)) = prefix_part.split_once(':') {
+                (p.to_string(), Some(m.to_string()))
+            } else {
+                (prefix_part.to_string(), None)
+            };
 
         ParsedPrompt {
             provider: provider_str,
@@ -93,9 +92,11 @@ pub fn parse_prompt(raw: &str, default_provider: &str) -> ParsedPrompt {
 // Router
 // ---------------------------------------------------------------------------
 
-/// Routes a raw user prompt to the correct `LlmProvider` and returns a
-/// token stream. Providers are constructed from the config on each call
-/// (they are lightweight — no persistent connections).
+/// Routes a raw user prompt string to the correct `LlmProvider` and
+/// returns a live token stream.
+///
+/// Provider instances are constructed fresh per call -- they are
+/// stateless wrappers around an HTTP client.
 pub async fn route_prompt(
     raw: &str,
     cfg: &crate::config::Config,
@@ -119,7 +120,10 @@ pub async fn route_prompt(
             let provider = local::LocalProvider::new(&local_cfg);
             provider.stream(&parsed.text).await
         }
-        other => anyhow::bail!("Unknown provider '{}'. Use @gemini, @claude, or @local.", other),
+        other => anyhow::bail!(
+            "Unknown provider '@{}'. Valid prefixes: @gemini, @claude, @local.",
+            other
+        ),
     }
 }
 
@@ -140,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_local_with_model() {
+    fn parse_local_with_model_override() {
         let p = parse_prompt("@local:mistral Explain transformers", "gemini");
         assert_eq!(p.provider, "local");
         assert_eq!(p.model_override, Some("mistral".to_string()));
@@ -155,9 +159,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_prefix_only_no_text() {
+    fn parse_prefix_only_no_body() {
         let p = parse_prompt("@gemini", "local");
         assert_eq!(p.provider, "gemini");
         assert_eq!(p.text, "");
+    }
+
+    #[test]
+    fn parse_strips_leading_whitespace() {
+        let p = parse_prompt("  hello  ", "gemini");
+        assert_eq!(p.text, "hello");
     }
 }

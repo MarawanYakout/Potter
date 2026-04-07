@@ -1,13 +1,16 @@
-//! Claude CLI provider.
+//! Anthropic Claude provider -- CLI subprocess wrapper.
 //!
-//! Spawns the `claude` binary as a subprocess and captures its stdout stream.
-//! The Claude CLI must be installed and authenticated (`claude login`).
+//! Spawns the `claude` binary (from the Claude Code CLI) as a child process
+//! and streams its stdout line-by-line back as token chunks.
 //!
-//! Usage of the CLI: `claude -p "<prompt>"`
+//! Prerequisites:
+//!   - `claude` CLI installed: https://docs.anthropic.com/en/docs/claude-code
+//!   - Authenticated: run `claude login` once
 
 use super::{LlmProvider, TokenStream};
 use crate::config::ClaudeConfig;
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use futures_util::stream;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -25,14 +28,14 @@ impl ClaudeProvider {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl LlmProvider for ClaudeProvider {
     fn name(&self) -> &str {
         "claude"
     }
 
     async fn stream(&self, prompt: &str) -> Result<TokenStream> {
-        debug!("Spawning claude subprocess");
+        debug!("Spawning claude subprocess: {} -p <prompt>", self.binary);
 
         let mut child = Command::new(&self.binary)
             .arg("-p")
@@ -50,28 +53,22 @@ impl LlmProvider for ClaudeProvider {
         let stdout = child
             .stdout
             .take()
-            .context("Failed to capture claude stdout")?;
+            .context("Failed to acquire claude stdout handle")?;
 
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-
-        // Stream each line of stdout as a token chunk.
-        // Claude CLI outputs the response incrementally line by line.
-        let token_stream = stream::unfold(lines, |mut lines| async move {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let chunk = format!("{line}\n");
-                    Some((Ok(chunk), lines))
-                }
-                Ok(None) => None, // EOF
-                Err(e) => Some((Err(anyhow::anyhow!(e)), lines)),
-            }
-        });
-
-        // Ensure the child process is awaited after the stream ends
-        // (fire-and-forget; process will be cleaned up by the OS otherwise)
+        // Ensure child process is reaped when the stream is exhausted
         tokio::spawn(async move {
             let _ = child.wait().await;
+        });
+
+        let reader = BufReader::new(stdout);
+        let lines = reader.lines();
+
+        let token_stream = stream::unfold(lines, |mut lines| async move {
+            match lines.next_line().await {
+                Ok(Some(line)) => Some((Ok(format!("{line}\n")), lines)),
+                Ok(None) => None,
+                Err(e) => Some((Err(anyhow::anyhow!("claude read error: {}", e)), lines)),
+            }
         });
 
         Ok(Box::pin(token_stream))

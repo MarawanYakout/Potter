@@ -38,6 +38,9 @@ rdev = "0.5"
 futures-util = "0.3"
 bytes = "1"
 
+# Async trait support for LlmProvider
+async-trait = "0.1"
+
 # Config file path resolution
 dirs = "5"
 
