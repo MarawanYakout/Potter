@@ -1,4 +1,4 @@
-# 🧙 Potter
+# Potter
 
 > Summon AI instantly, anywhere on your desktop — no terminal, no browser, no friction.
 
@@ -8,17 +8,17 @@ Think **Alfred / Raycast**, but for LLMs — and fully open-source.
 
 ---
 
-## ✨ Features
+## Features
 
 - **Global hotkey** — `Alt+Space` (Linux) / `Option+Space` (macOS)
 - **Frameless overlay** pinned to top-right, always-on-top
 - **Streaming responses** — token-by-token, no waiting
 - **Multiple LLM backends:**
-  - 🌐 Google Gemini (REST API)
-  - 🤖 Anthropic Claude (CLI subprocess)
-  - 🏠 Local AI — Ollama, LM Studio, llama.cpp (OpenAI-compatible)
+  - Google Gemini (REST API)
+  - Anthropic Claude (CLI subprocess)
+  - Local AI — Ollama, LM Studio, llama.cpp (OpenAI-compatible)
 - **`@prefix` routing** — `@gemini`, `@claude`, `@local`, `@local:mistral`
-- **Prompt history** — `↑/↓` to cycle through past prompts
+- **Prompt history** — `Up/Down` to cycle through past prompts
 - **Markdown rendering** — code blocks, bold, lists in the output
 - **Copy button** — one-click copy of any response
 - **System tray icon** — right-click to configure or quit
@@ -28,7 +28,7 @@ Think **Alfred / Raycast**, but for LLMs — and fully open-source.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -54,7 +54,7 @@ Potter starts as a background daemon and registers the global hotkey. Press `Alt
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Config file lives at `~/.config/potter/config.toml` (auto-created on first run):
 
@@ -82,7 +82,7 @@ model = "llama3.2"                   # any model from `ollama list`
 
 ---
 
-## 🔀 LLM Routing
+## LLM Routing
 
 Prefix your prompt to choose the backend:
 
@@ -96,20 +96,20 @@ Prefix your prompt to choose the backend:
 
 ---
 
-## ⌨️ Keyboard Shortcuts
+## Keyboard Shortcuts
 
 | Key | Action |
 |---|---|
 | `Alt+Space` | Open overlay |
 | `Enter` | Submit prompt |
 | `Shift+Enter` | New line in prompt |
-| `↑ / ↓` | Cycle prompt history |
+| `Up / Down` | Cycle prompt history |
 | `Escape` | Close overlay (while focused) |
 | `Ctrl+V` (on open) | Paste clipboard as context prefix |
 
 ---
 
-## 🔌 Plugins (Python)
+## Plugins (Python)
 
 Drop a `.py` file in `~/.config/potter/plugins/`. Each plugin registers a `/command`:
 
@@ -128,17 +128,17 @@ Then type `/translate Bonjour le monde` in Potter.
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
-- [x] Phase 1: Hotkey → overlay → Gemini streaming → Escape to close
-- [ ] Phase 2: Claude CLI + Ollama local backend + `@prefix` routing + config
+- [x] Phase 1: Hotkey listener, GTK4 overlay window, Gemini streaming, async LLM dispatch, Escape to close
+- [ ] Phase 2: Claude CLI + Ollama local backend + `@prefix` routing + config file
 - [ ] Phase 3: Markdown rendering, prompt history, copy button, system tray
 - [ ] Phase 4: Auto model discovery, clipboard context, Python plugins
 - [ ] Phase 5: Packaging — `.deb`, `.rpm`, AUR, Homebrew
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 Potter Daemon (Rust)
@@ -155,6 +155,6 @@ Potter Daemon (Rust)
 
 ---
 
-## 📄 License
+## License
 
 MIT — see [LICENSE](LICENSE)
